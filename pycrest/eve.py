@@ -121,7 +121,7 @@ class RequestLimiter:
         delta=cTime-self._lastActivation
         self._lastActivation=cTime
         
-        self._pool+=1-(delta*self.requestsPerSecond)
+        self._pool=max(0, self._pool+1-(delta*self.requestsPerSecond))
         return (self._pool-self.requestsPerSecond)/self.requestsPerSecond
 
 
