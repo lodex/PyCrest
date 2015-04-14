@@ -196,9 +196,8 @@ class APIConnection(object):
         
         res = self._session.get(resource, params=prms)
         if res.status_code != 200:
-            # more human readable unexpected status code exception
-            res.raise_for_status()
-            #raise APIException("Got unexpected status code from server: %i" % res.status_code)
+            # TODO: check if this actually makes sense. 
+            raise APIException("Got unexpected status code from server: %i(%s)" % (res.status_code, res.reason))
 
         ret = res.json()
 
