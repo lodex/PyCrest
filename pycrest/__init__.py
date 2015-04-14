@@ -8,6 +8,7 @@ class NullHandler(logging.Handler):
 logger = logging.getLogger('pycrest')
 logger.addHandler(NullHandler())
 
-version = "0.0.1"
+client = 'PyCrest(lodex fork)'
+version = "0.0.3.devel"
 
 from .eve import EVE

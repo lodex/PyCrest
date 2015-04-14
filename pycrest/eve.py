@@ -3,10 +3,11 @@ import base64
 import requests
 import time
 import zlib
-from pycrest import version
+from pycrest import client, version
 from pycrest.compat import bytes_, text_
 from pycrest.errors import APIException
 from pycrest.weak_ciphers import WeakCiphersAdapter
+from hashlib import sha224
 
 try:
     from urllib.parse import urlparse, urlunparse, parse_qsl
@@ -47,8 +48,20 @@ class FileCache(APICache):
         if not os.path.isdir(self.path):
             os.mkdir(self.path, 0o700)
 
+    def _hashx(self, key):
+        '''Persistent hash value generator
+        
+        Note: current implementation does not handle nested data structures in given key.
+        
+        :param key: a frozenset object containing unique data for hash key generation.
+        :return string: hash value as hexadecimal string.
+        '''
+        hashx_value=sha224(pickle.dumps(sorted(key))).hexdigest()
+        logger.debug('Generated hashx (%s) for %s', hashx_value, sorted(key))
+        return hashx_value
+
     def _getpath(self, key):
-        return os.path.join(self.path, str(hash(key)) + '.cache')
+        return os.path.join(self.path, str(self._hashx(key)) + '.cache')
 
     def put(self, key, value):
         with open(self._getpath(key), 'wb') as f:
@@ -94,6 +107,33 @@ class DictCache(APICache):
         self._dict.pop(key, None)
 
 
+class RequestLimiter:
+    '''Simple connections per second limiter
+    '''
+    def __init__(self, requestsPerSecond=30):
+        self.requestsPerSecond=requestsPerSecond
+        self._pool=0.0
+        self._lastActivation=time.perf_counter()
+        
+    def _updatePool(self):
+        cTime=time.perf_counter()
+        
+        delta=cTime-self._lastActivation
+        self._lastActivation=cTime
+        
+        self._pool+=1-(delta*self.requestsPerSecond)
+        return (self._pool-self.requestsPerSecond)/self.requestsPerSecond
+
+
+    def sleep(self):
+        '''Sleep only if limit exceeded.
+        '''
+        waitTime=self._updatePool()
+        if(waitTime>0):
+            logger.debug('limit, sleep for: %f',waitTime)
+            time.sleep(waitTime)
+
+
 class APIConnection(object):
     def __init__(self, additional_headers=None, user_agent=None, cache_dir=None):
         # Set up a Requests Session
@@ -101,7 +141,7 @@ class APIConnection(object):
         if additional_headers is None:
             additional_headers = {}
         if user_agent is None:
-            user_agent = "PyCrest/{0}".format(version)
+            user_agent = "{0}/{1}".format(client, version)
         session.headers.update({
             "User-Agent": user_agent,
             "Accept": "application/json",
@@ -115,6 +155,10 @@ class APIConnection(object):
             self.cache = FileCache(self.cache_dir)
         else:
             self.cache = DictCache()
+        
+        # Create a connection limiter object. Generally, the CREST
+        # connections limit is 30/s  
+        self._connection_limiter=RequestLimiter(requestsPerSecond=30)
 
     def get(self, resource, params=None):
         logger.debug('Getting resource %s', resource)
@@ -134,7 +178,7 @@ class APIConnection(object):
             prms[key] = params[key]
 
         # check cache
-        key = (resource, frozenset(self._session.headers.items()), frozenset(prms.items()))
+        key = frozenset({'resource':resource}.items()).union(frozenset(self._session.headers.items())).union(frozenset(prms.items()))
         cached = self.cache.get(key)
         if cached and cached['expires'] > time.time():
             logger.debug('Cache hit for resource %s (params=%s)', resource, prms)
@@ -146,14 +190,20 @@ class APIConnection(object):
             logger.debug('Cache miss for resource %s (params=%s', resource, prms)
 
         logger.debug('Getting resource %s (params=%s)', resource, prms)
+        
+        #limit the requests per second after cache check.
+        self._connection_limiter.sleep()
+        
         res = self._session.get(resource, params=prms)
         if res.status_code != 200:
-            raise APIException("Got unexpected status code from server: %i" % res.status_code)
+            # more human readable unexpected status code exception
+            res.raise_for_status()
+            #raise APIException("Got unexpected status code from server: %i" % res.status_code)
 
         ret = res.json()
 
         # cache result
-        key = (resource, frozenset(self._session.headers.items()), frozenset(prms.items()))
+        key = frozenset({'resource':resource}.items()).union(frozenset(self._session.headers.items())).union(frozenset(prms.items()))
         expires = self._get_expires(res)
         if expires > 0:
             self.cache.put(key, {'expires': time.time() + expires, 'payload': ret})
