@@ -53,11 +53,13 @@ class FileCache(APICache):
         
         Note: current implementation does not handle nested data structures in given key.
         
-        :param key: a frozenset object containing unique data for hash key generation.
-        :return string: hash value as hexadecimal string.
+        Parameters:
+            key(frozenset): a frozenset object containing unique data for hash key generation.
+            
+        Returns:
+            string: hash value as hexadecimal string.
         '''
         hashx_value=sha224(pickle.dumps(sorted(key))).hexdigest()
-        logger.debug('Generated hashx (%s) for %s', hashx_value, sorted(key))
         return hashx_value
 
     def _getpath(self, key):
@@ -107,31 +109,32 @@ class DictCache(APICache):
         self._dict.pop(key, None)
 
 
+
 class RequestLimiter:
     '''Simple connections per second limiter
     '''
-    def __init__(self, requestsPerSecond=30):
-        self.requestsPerSecond=requestsPerSecond
+    def __init__(self, requests_per_second=30):
+        self.requests_per_second=requests_per_second
         self._pool=0.0
-        self._lastActivation=time.perf_counter()
+        self._last_activation=time.perf_counter()
         
-    def _updatePool(self):
-        cTime=time.perf_counter()
+    def _update_pool(self):
+        current_time=time.perf_counter()
         
-        delta=cTime-self._lastActivation
-        self._lastActivation=cTime
+        delta=current_time-self._last_activation
+        self._last_activation=current_time
         
-        self._pool=max(0, self._pool+1-(delta*self.requestsPerSecond))
-        return (self._pool-self.requestsPerSecond)/self.requestsPerSecond
+        self._pool=max(0, self._pool+1-(delta*self.requests_per_second))
+        return (self._pool-self.requests_per_second)/self.requests_per_second
 
 
     def sleep(self):
         '''Sleep only if limit exceeded.
         '''
-        waitTime=self._updatePool()
-        if(waitTime>0):
-            logger.debug('limit, sleep for: %f',waitTime)
-            time.sleep(waitTime)
+        wait_time=self._update_pool()
+        if(wait_time>0):
+            logger.debug('request limit, sleep for: %f',wait_time)
+            time.sleep(wait_time)
 
 
 class APIConnection(object):
@@ -156,8 +159,8 @@ class APIConnection(object):
         else:
             self.cache = DictCache()
         
-        # Create a connection limiter object. Generally, the CREST
-        # connections limit is 30/s  
+        # Create a request limiter object. Generally, the CREST
+        # request limit is 30/s  
         self._connection_limiter=RequestLimiter(requestsPerSecond=30)
 
     def get(self, resource, params=None):
@@ -178,7 +181,11 @@ class APIConnection(object):
             prms[key] = params[key]
 
         # check cache
-        key = frozenset({'resource':resource}.items()).union(frozenset(self._session.headers.items())).union(frozenset(prms.items()))
+        ''' TODO: check how to differentiate between clients. Current cache control does now work if auth token is updated.
+                  Going on a limb here and assuming the secret key will be the equivalent of current api key, named
+                  as api_key in pycrest implementation
+        '''
+        key = frozenset({'resource':resource, 'key':self.client_id}.items())
         cached = self.cache.get(key)
         if cached and cached['expires'] > time.time():
             logger.debug('Cache hit for resource %s (params=%s)', resource, prms)
@@ -187,7 +194,7 @@ class APIConnection(object):
             logger.debug('Cache stale for resource %s (params=%s)', resource, prms)
             self.cache.invalidate(key)
         else:
-            logger.debug('Cache miss for resource %s (params=%s', resource, prms)
+            logger.debug('Cache miss for resource %s (params=%s)', resource, prms)
 
         logger.debug('Getting resource %s (params=%s)', resource, prms)
         
@@ -196,13 +203,13 @@ class APIConnection(object):
         
         res = self._session.get(resource, params=prms)
         if res.status_code != 200:
-            # TODO: check if this actually makes sense. 
-            raise APIException("Got unexpected status code from server: %i(%s)" % (res.status_code, res.reason))
+            raise APIException("Got unexpected status code from server: %i (%s)" % (res.status_code, res.reason))
 
         ret = res.json()
 
         # cache result
-        key = frozenset({'resource':resource}.items()).union(frozenset(self._session.headers.items())).union(frozenset(prms.items()))
+        key = frozenset({'resource':resource, 'api_key':self.api_key}.items())
+        
         expires = self._get_expires(res)
         if expires > 0:
             self.cache.put(key, {'expires': time.time() + expires, 'payload': ret})
@@ -216,6 +223,7 @@ class APIConnection(object):
             return 0
         match = cache_re.search(response.headers['Cache-Control'])
         if match:
+            logger.debug('Cache resource for %s', int(match.group(1)))
             return int(match.group(1))
         return 0
 
