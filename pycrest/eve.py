@@ -77,6 +77,9 @@ class FileCache(APICache):
         try:
             with open(self._getpath(key), 'rb') as f:
                 return pickle.loads(zlib.decompress(f.read()))
+        except zlib.error:
+            # something went wrong
+            return None
         except IOError as ex:
             if ex.errno == 2:  # file does not exist (yet)
                 return None
@@ -161,7 +164,7 @@ class APIConnection(object):
         
         # Create a request limiter object. Generally, the CREST
         # request limit is 30/s  
-        self._connection_limiter=RequestLimiter(requestsPerSecond=30)
+        self._connection_limiter=RequestLimiter(requests_per_second=30)
 
     def get(self, resource, params=None):
         logger.debug('Getting resource %s', resource)
@@ -185,7 +188,7 @@ class APIConnection(object):
                   Going on a limb here and assuming the secret key will be the equivalent of current api key, named
                   as api_key in pycrest implementation
         '''
-        key = frozenset({'resource':resource, 'key':self.client_id}.items())
+        key = frozenset({'resource':resource, 'key':self.client_id}.items()).union(prms.items())
         cached = self.cache.get(key)
         if cached and cached['expires'] > time.time():
             logger.debug('Cache hit for resource %s (params=%s)', resource, prms)
@@ -208,7 +211,7 @@ class APIConnection(object):
         ret = res.json()
 
         # cache result
-        key = frozenset({'resource':resource, 'api_key':self.api_key}.items())
+        key = frozenset({'resource':resource, 'key':self.client_id}.items()).union(prms.items())
         
         expires = self._get_expires(res)
         if expires > 0:
