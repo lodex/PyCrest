@@ -3,7 +3,7 @@ import base64
 import requests
 import time
 import zlib
-from pycrest import client, version
+from pycrest import version
 from pycrest.compat import bytes_, text_
 from pycrest.errors import APIException
 from pycrest.weak_ciphers import WeakCiphersAdapter
@@ -113,8 +113,8 @@ class DictCache(APICache):
 
 
 
-class RequestLimiter:
-    '''Simple connections per second limiter
+class RequestsLimiter:
+    '''Simple requests per second limiter
     '''
     def __init__(self, requests_per_second=30):
         self.requests_per_second=requests_per_second
@@ -147,7 +147,7 @@ class APIConnection(object):
         if additional_headers is None:
             additional_headers = {}
         if user_agent is None:
-            user_agent = "{0}/{1}".format(client, version)
+            user_agent = "PyCrest/{0}".format(version)
         session.headers.update({
             "User-Agent": user_agent,
             "Accept": "application/json",
@@ -162,9 +162,8 @@ class APIConnection(object):
         else:
             self.cache = DictCache()
         
-        # Create a request limiter object. Generally, the CREST
-        # request limit is 30/s  
-        self._connection_limiter=RequestLimiter(requests_per_second=30)
+        # Create a request limiter object. Generally, the CREST requests limit is 30/s  
+        self._requests_limiter=RequestsLimiter(requests_per_second=30)
 
     def get(self, resource, params=None):
         logger.debug('Getting resource %s', resource)
@@ -202,7 +201,7 @@ class APIConnection(object):
         logger.debug('Getting resource %s (params=%s)', resource, prms)
         
         #limit the requests per second after cache check.
-        self._connection_limiter.sleep()
+        self._requests_limiter.sleep()
         
         res = self._session.get(resource, params=prms)
         if res.status_code != 200:
@@ -322,10 +321,13 @@ class AuthedConnection(EVE):
 
     def __call__(self):
         if not self._data:
-            if int(time.time()) >= self.expires:
-                self.refresh()
             self._data = APIObject(self.get(self._endpoint), self)
         return self._data
+
+    def get(self, resource, params=None):
+        if int(time.time()) >= self.expires:
+            self.refresh()
+        return super(self.__class__, self).get(resource, params)
 
     def whoami(self):
         if 'whoami' not in self._cache:
